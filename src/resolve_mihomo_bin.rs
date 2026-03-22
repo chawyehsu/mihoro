@@ -55,7 +55,22 @@ pub async fn fetch_latest_version(
 /// - MIPS: mips-hardfloat, mips-softfloat, mips64, mips64le, mipsle-hardfloat, mipsle-softfloat
 /// - Others: loong64-abi1, loong64-abi2, ppc64le, riscv64, s390x
 pub fn detect_arch() -> Result<String> {
-    let arch = std::env::consts::ARCH;
+    detect_arch_for_os(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+fn detect_arch_for_os(os: &str, arch: &str) -> Result<String> {
+    if os == "darwin" {
+        return match arch {
+            "x86_64" => Ok("amd64-compatible".to_string()),
+            "aarch64" => Ok("arm64".to_string()),
+            _ => bail!(
+                "unsupported architecture for {}: {} (use --arch to specify manually)",
+                os,
+                arch
+            ),
+        };
+    }
+
     match arch {
         // x86_64: Default to amd64-compatible for maximum compatibility
         "x86_64" => Ok("amd64-compatible".to_string()),
@@ -88,8 +103,16 @@ pub fn detect_arch() -> Result<String> {
     }
 }
 
+fn detect_os() -> Result<String> {
+    match std::env::consts::OS {
+        "linux" => Ok("linux".to_string()),
+        "macos" => Ok("darwin".to_string()),
+        os => bail!("unsupported operating system for mihomo binary auto-resolution: {os}"),
+    }
+}
+
 /// List of all supported Mihomo architectures.
-const SUPPORTED_ARCHS: &[&str] = &[
+const SUPPORTED_LINUX_ARCHS: &[&str] = &[
     "386",
     "386-go120",
     "386-go123",
@@ -122,16 +145,44 @@ const SUPPORTED_ARCHS: &[&str] = &[
     "s390x",
 ];
 
+/// List of supported architectures on macOS.
+const SUPPORTED_DARWIN_ARCHS: &[&str] = &[
+    "amd64",
+    "amd64-compatible",
+    "amd64-v1",
+    "amd64-v1-go120",
+    "amd64-v1-go122",
+    "amd64-v1-go124",
+    "amd64-v2",
+    "amd64-v2-go120",
+    "amd64-v2-go122",
+    "amd64-v2-go124",
+    "amd64-v3",
+    "amd64-v3-go120",
+    "amd64-v3-go122",
+    "amd64-v3-go124",
+    "arm64",
+    "arm64-go120",
+    "arm64-go122",
+    "arm64-go124",
+];
+
 /// Validates that the architecture is supported by Mihomo.
 ///
 /// Returns the architecture if valid, or an error with suggestions if invalid.
-pub fn validate_arch(arch: &str) -> Result<String> {
-    if SUPPORTED_ARCHS.contains(&arch) {
+pub fn validate_arch(arch: &str, os: &str) -> Result<String> {
+    let supported_archs: &[&str] = match os {
+        "linux" => SUPPORTED_LINUX_ARCHS,
+        "darwin" => SUPPORTED_DARWIN_ARCHS,
+        _ => bail!("unsupported operating system: {os}"),
+    };
+
+    if supported_archs.contains(&arch) {
         return Ok(arch.to_string());
     }
 
     // Find similar architectures for helpful error message
-    let suggestions: Vec<&str> = SUPPORTED_ARCHS
+    let suggestions: Vec<&str> = supported_archs
         .iter()
         .filter(|a| a.starts_with(&arch[..arch.len().min(3)]))
         .copied()
@@ -141,7 +192,7 @@ pub fn validate_arch(arch: &str) -> Result<String> {
         bail!(
             "unsupported architecture: '{}'\nSupported: {}",
             arch,
-            SUPPORTED_ARCHS.join(", ")
+            supported_archs.join(", ")
         );
     } else {
         bail!(
@@ -153,14 +204,14 @@ pub fn validate_arch(arch: &str) -> Result<String> {
 }
 
 /// Constructs the download URL for a specific Mihomo version and architecture.
-pub fn build_download_url(version: &str, arch: &str, channel: &MihomoChannel) -> String {
+pub fn build_download_url(version: &str, os: &str, arch: &str, channel: &MihomoChannel) -> String {
     let base = match channel {
         MihomoChannel::Stable => "https://github.com/MetaCubeX/mihomo/releases/latest/download",
         MihomoChannel::Alpha => {
             "https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha"
         }
     };
-    format!("{}/mihomo-linux-{}-{}.gz", base, arch, version)
+    format!("{}/mihomo-{}-{}-{}.gz", base, os, arch, version)
 }
 
 /// Resolves the Mihomo binary download URL.
@@ -185,11 +236,13 @@ pub async fn resolve_binary_url(
         }
     }
 
+    let os = detect_os()?;
+
     // Determine architecture: CLI override > config override > auto-detect
     let arch = if let Some(arch) = arch_override {
-        validate_arch(arch)?
+        validate_arch(arch, &os)?
     } else if let Some(ref arch) = config.mihomo_arch {
-        validate_arch(arch)?
+        validate_arch(arch, &os)?
     } else {
         detect_arch()?
     };
@@ -204,7 +257,7 @@ pub async fn resolve_binary_url(
         "{} Fetching latest mihomo {} release for {}...",
         prefix.cyan(),
         channel_name.bold(),
-        format!("linux-{}", arch).bold()
+        format!("{}-{}", os, arch).bold()
     );
 
     let version = fetch_latest_version(client, channel, &config.mihoro_user_agent).await?;
@@ -215,13 +268,14 @@ pub async fn resolve_binary_url(
         version.bold()
     );
 
-    let url = build_download_url(&version, &arch, channel);
+    let url = build_download_url(&version, &os, &arch, channel);
     Ok(url)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::Client;
 
     #[test]
     fn test_detect_arch_returns_valid_value() {
@@ -229,13 +283,17 @@ mod tests {
         let result = detect_arch();
         assert!(result.is_ok());
         let arch = result.unwrap();
-        // Updated to include amd64-compatible as the new default for x86_64
-        assert!(SUPPORTED_ARCHS.contains(&arch.as_str()));
+        if std::env::consts::OS == "macos" {
+            assert!(SUPPORTED_DARWIN_ARCHS.contains(&arch.as_str()));
+        } else {
+            // Updated to include amd64-compatible as the new default for x86_64
+            assert!(SUPPORTED_LINUX_ARCHS.contains(&arch.as_str()));
+        }
     }
 
     #[test]
     fn test_build_download_url_stable() {
-        let url = build_download_url("v1.19.0", "amd64", &MihomoChannel::Stable);
+        let url = build_download_url("v1.19.0", "linux", "amd64", &MihomoChannel::Stable);
         assert_eq!(
 			url,
 			"https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-amd64-v1.19.0.gz"
@@ -244,7 +302,7 @@ mod tests {
 
     #[test]
     fn test_build_download_url_alpha() {
-        let url = build_download_url("alpha-abc123", "arm64", &MihomoChannel::Alpha);
+        let url = build_download_url("alpha-abc123", "linux", "arm64", &MihomoChannel::Alpha);
         assert_eq!(
 			url,
 			"https://github.com/MetaCubeX/mihomo/releases/download/Prerelease-Alpha/mihomo-linux-arm64-alpha-abc123.gz"
@@ -253,7 +311,12 @@ mod tests {
 
     #[test]
     fn test_build_download_url_compatible_arch() {
-        let url = build_download_url("v1.19.0", "amd64-compatible", &MihomoChannel::Stable);
+        let url = build_download_url(
+            "v1.19.0",
+            "linux",
+            "amd64-compatible",
+            &MihomoChannel::Stable,
+        );
         assert_eq!(
 			url,
 			"https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-linux-amd64-compatible-v1.19.0.gz"
@@ -261,29 +324,55 @@ mod tests {
     }
 
     #[test]
+    fn test_build_download_url_darwin() {
+        let url = build_download_url("v1.19.0", "darwin", "arm64", &MihomoChannel::Stable);
+        assert_eq!(
+            url,
+            "https://github.com/MetaCubeX/mihomo/releases/latest/download/mihomo-darwin-arm64-v1.19.0.gz"
+        );
+    }
+
+    #[test]
     fn test_validate_arch_accepts_valid_archs() {
-        assert!(validate_arch("amd64").is_ok());
-        assert!(validate_arch("amd64-compatible").is_ok());
-        assert!(validate_arch("amd64-v3").is_ok());
-        assert!(validate_arch("arm64").is_ok());
-        assert!(validate_arch("armv7").is_ok());
-        assert!(validate_arch("riscv64").is_ok());
-        assert!(validate_arch("loong64-abi2").is_ok());
+        assert!(validate_arch("amd64", "linux").is_ok());
+        assert!(validate_arch("amd64-compatible", "linux").is_ok());
+        assert!(validate_arch("amd64-v3", "linux").is_ok());
+        assert!(validate_arch("arm64", "linux").is_ok());
+        assert!(validate_arch("armv7", "linux").is_ok());
+        assert!(validate_arch("riscv64", "linux").is_ok());
+        assert!(validate_arch("loong64-abi2", "linux").is_ok());
+        assert!(validate_arch("arm64", "darwin").is_ok());
+        assert!(validate_arch("amd64", "darwin").is_ok());
     }
 
     #[test]
     fn test_validate_arch_rejects_invalid_archs() {
-        assert!(validate_arch("invalid").is_err());
-        assert!(validate_arch("x86_64").is_err());
-        assert!(validate_arch("aarch64").is_err());
+        assert!(validate_arch("invalid", "linux").is_err());
+        assert!(validate_arch("x86_64", "linux").is_err());
+        assert!(validate_arch("aarch64", "linux").is_err());
+        assert!(validate_arch("armv7", "darwin").is_err());
     }
 
     #[test]
     fn test_validate_arch_provides_suggestions() {
-        let result = validate_arch("amd");
+        let result = validate_arch("amd", "linux");
         assert!(result.is_err());
         let error = result.unwrap_err().to_string();
         assert!(error.contains("Did you mean"));
         assert!(error.contains("amd64"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_binary_url_prefers_configured_remote_url() {
+        let client = Client::new();
+        let config = Config {
+            remote_mihomo_binary_url: Some("https://example.com/mihomo.gz".to_string()),
+            ..Config::default()
+        };
+
+        let url = resolve_binary_url(&client, &config, None, "mihoro:")
+            .await
+            .unwrap();
+        assert_eq!(url, "https://example.com/mihomo.gz");
     }
 }

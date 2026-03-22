@@ -56,17 +56,17 @@ pub enum Commands {
         #[arg(long)]
         arch: Option<String>,
     },
-    /// Apply mihomo config overrides and restart mihomo.service
+    /// Apply mihomo config overrides and restart service
     Apply,
-    /// Start mihomo.service with systemctl
+    /// Start mihomo service
     Start,
-    /// Check mihomo.service status with systemctl
+    /// Check mihomo service status
     Status,
-    /// Stop mihomo.service with systemctl
+    /// Stop mihomo service
     Stop,
-    /// Restart mihomo.service with systemctl
+    /// Restart mihomo service
     Restart,
-    /// Check mihomo.service logs with journalctl
+    /// Check mihomo service logs
     #[clap(visible_alias("logs"))]
     Log,
     /// Output proxy export commands
@@ -138,4 +138,28 @@ pub enum CronCommands {
     Disable,
     /// Show auto-update cron job status
     Status,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_service_subcommands_parse_contract() {
+        let start = Args::parse_from(["mihoro", "start"]);
+        assert!(matches!(start.command, Some(Commands::Start)));
+
+        let status = Args::parse_from(["mihoro", "status"]);
+        assert!(matches!(status.command, Some(Commands::Status)));
+
+        let stop = Args::parse_from(["mihoro", "stop"]);
+        assert!(matches!(stop.command, Some(Commands::Stop)));
+
+        let restart = Args::parse_from(["mihoro", "restart"]);
+        assert!(matches!(restart.command, Some(Commands::Restart)));
+
+        let log = Args::parse_from(["mihoro", "log"]);
+        assert!(matches!(log.command, Some(Commands::Log)));
+    }
 }

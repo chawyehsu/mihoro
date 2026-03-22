@@ -3,7 +3,7 @@ use crate::config::{apply_mihomo_override, parse_config, Config};
 use crate::cron;
 use crate::proxy::{proxy_export_cmd, proxy_unset_cmd};
 use crate::resolve_mihomo_bin;
-use crate::systemctl::Systemctl;
+use crate::service::{launchd, ServiceManager, ServiceManagerKind};
 use crate::utils::{
     create_parent_dir, delete_file, download_file, extract_gzip, try_decode_base64_file_inplace,
 };
@@ -29,12 +29,14 @@ pub struct Mihoro {
     pub mihomo_target_binary_path: String,
     pub mihomo_target_config_root: String,
     pub mihomo_target_config_path: String,
+    pub mihomo_service_name: String,
     pub mihomo_target_service_path: String,
 }
 
 impl Mihoro {
     pub fn new(config_path: &String) -> Result<Mihoro> {
         let config = parse_config(tilde(&config_path).as_ref())?;
+        let service_name = normalize_service_name(&config.service_name);
         Ok(Mihoro {
             prefix: String::from("mihoro:"),
             config: config.clone(),
@@ -42,12 +44,15 @@ impl Mihoro {
             mihomo_target_config_root: tilde(&config.mihomo_config_root).to_string(),
             mihomo_target_config_path: tilde(&format!("{}/config.yaml", config.mihomo_config_root))
                 .to_string(),
-            mihomo_target_service_path: tilde(&format!(
-                "{}/mihomo.service",
-                config.user_systemd_root
-            ))
-            .to_string(),
+            mihomo_service_name: service_name.clone(),
+            mihomo_target_service_path: resolve_service_path(&config, &service_name),
         })
+    }
+
+    pub fn service_manager(&self) -> Result<ServiceManager> {
+        let kind_str = self.config.service_manager.as_deref().unwrap_or("auto");
+        let kind = ServiceManagerKind::from_str(kind_str)?;
+        ServiceManager::new(kind)
     }
 
     pub async fn setup(
@@ -57,7 +62,7 @@ impl Mihoro {
         arch_override: Option<&str>,
     ) -> Result<()> {
         println!(
-            "{} Setting up mihomo's binary, config, and systemd service...",
+            "{} Setting up mihomo binary, config, and service...",
             &self.prefix.cyan()
         );
 
@@ -135,16 +140,18 @@ impl Mihoro {
         // Download geodata
         self.update_geodata(&client).await?;
 
-        // Create mihomo.service systemd file
-        create_mihomo_service(
+        // Create platform-specific service file
+        create_mihomo_service_for_platform(
+            &self.mihomo_service_name,
             &self.mihomo_target_binary_path,
             &self.mihomo_target_config_root,
             &self.mihomo_target_service_path,
             &self.prefix,
         )?;
 
-        Systemctl::new().enable("mihomo.service").execute()?;
-        Systemctl::new().start("mihomo.service").execute()?;
+        let service_manager = self.service_manager()?;
+        service_manager.enable(&self.mihomo_service_name)?;
+        service_manager.start(&self.mihomo_service_name)?;
         Ok(())
     }
 
@@ -189,10 +196,11 @@ impl Mihoro {
 
         // Stop the service before overwriting binary to avoid "Text file busy" error
         println!(
-            "{} Stopping mihomo.service before overwriting...",
-            self.prefix.yellow()
+            "{} Stopping {} before overwriting...",
+            self.prefix.yellow(),
+            self.mihomo_service_name
         );
-        Systemctl::new().stop("mihomo.service").execute()?;
+        self.service_manager()?.stop(&self.mihomo_service_name)?;
 
         // Extract and overwrite the binary
         extract_gzip(temp_path, &self.mihomo_target_binary_path, &self.prefix)?;
@@ -209,8 +217,12 @@ impl Mihoro {
 
         // Restart the service if requested
         if restart {
-            println!("{} Restarting mihomo.service...", self.prefix.green());
-            Systemctl::new().start("mihomo.service").execute()?;
+            println!(
+                "{} Restarting {}...",
+                self.prefix.green(),
+                self.mihomo_service_name
+            );
+            self.service_manager()?.start(&self.mihomo_service_name)?;
         }
 
         Ok(())
@@ -235,10 +247,14 @@ impl Mihoro {
             self.prefix.yellow()
         );
 
-        // Restart mihomo systemd service if requested
+        // Restart service if requested
         if restart {
-            println!("{} Restart mihomo.service", self.prefix.green());
-            Systemctl::new().restart("mihomo.service").execute()?;
+            println!(
+                "{} Restart {}",
+                self.prefix.green(),
+                self.mihomo_service_name
+            );
+            self.service_manager()?.restart(&self.mihomo_service_name)?;
         }
         Ok(())
     }
@@ -296,28 +312,32 @@ impl Mihoro {
             },
         )?;
 
-        // Restart mihomo systemd service
-        Systemctl::new()
-            .restart("mihomo.service")
-            .execute()
+        // Restart service
+        self.service_manager()?
+            .restart(&self.mihomo_service_name)
             .map(|_| {
-                println!("{} Restarted mihomo.service", self.prefix.green().bold());
+                println!(
+                    "{} Restarted {}",
+                    self.prefix.green().bold(),
+                    self.mihomo_service_name
+                );
             })?;
         Ok(())
     }
 
     pub fn uninstall(&self) -> Result<()> {
-        Systemctl::new().stop("mihomo.service").execute()?;
-        Systemctl::new().disable("mihomo.service").execute()?;
+        let service_manager = self.service_manager()?;
+        service_manager.stop(&self.mihomo_service_name)?;
+        service_manager.disable(&self.mihomo_service_name)?;
 
         delete_file(&self.mihomo_target_service_path, &self.prefix)?;
         delete_file(&self.mihomo_target_config_path, &self.prefix)?;
 
-        Systemctl::new().daemon_reload().execute()?;
-        Systemctl::new().reset_failed().execute()?;
+        service_manager.daemon_reload()?;
+        service_manager.reset_failed()?;
         println!(
-            "{} Disabled and reloaded systemd services",
-            self.prefix.green()
+            "{} Disabled and reloaded service manager state",
+            self.prefix.green().bold()
         );
 
         // Disable and remove cron job
@@ -436,6 +456,82 @@ WantedBy=default.target",
     Ok(())
 }
 
+fn create_mihomo_launchd_service(
+    service_name: &str,
+    mihomo_binary_path: &str,
+    mihomo_config_root: &str,
+    mihomo_service_path: &str,
+    prefix: &str,
+) -> Result<()> {
+    let plist = launchd::build_plist(service_name, mihomo_binary_path, mihomo_config_root);
+
+    create_parent_dir(Path::new(mihomo_service_path))?;
+    fs::write(mihomo_service_path, plist)?;
+
+    println!(
+        "{} Created launchd plist at {}",
+        prefix.green(),
+        mihomo_service_path.underline().yellow()
+    );
+    Ok(())
+}
+
+fn create_mihomo_service_for_platform(
+    service_name: &str,
+    mihomo_binary_path: &str,
+    mihomo_config_root: &str,
+    mihomo_service_path: &str,
+    prefix: &str,
+) -> Result<()> {
+    match std::env::consts::OS {
+        "macos" => create_mihomo_launchd_service(
+            service_name,
+            mihomo_binary_path,
+            mihomo_config_root,
+            mihomo_service_path,
+            prefix,
+        ),
+        _ => create_mihomo_service(
+            mihomo_binary_path,
+            mihomo_config_root,
+            mihomo_service_path,
+            prefix,
+        ),
+    }
+}
+
+fn normalize_service_name(service_name: &str) -> String {
+    if service_name.ends_with(".service") {
+        service_name.to_string()
+    } else {
+        format!("{service_name}.service")
+    }
+}
+
+fn resolve_service_path(config: &Config, service_name: &str) -> String {
+    match std::env::consts::OS {
+        "macos" => {
+            let root = config
+                .service_root
+                .clone()
+                .unwrap_or_else(|| String::from("~/Library/LaunchAgents"));
+            tilde(&format!(
+                "{}/{}.plist",
+                root,
+                launchd::service_stem(service_name)
+            ))
+            .to_string()
+        }
+        _ => {
+            let root = config
+                .service_root
+                .clone()
+                .unwrap_or_else(|| config.user_systemd_root.clone());
+            tilde(&format!("{}/{}", root, service_name)).to_string()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,10 +561,17 @@ mod tests {
             mihoro.mihomo_target_config_path,
             "/tmp/test/mihomo/config.yaml"
         );
-        assert_eq!(
-            mihoro.mihomo_target_service_path,
-            "/tmp/test/systemd/mihomo.service"
-        );
+        if std::env::consts::OS == "macos" {
+            assert!(mihoro
+                .mihomo_target_service_path
+                .ends_with("/Library/LaunchAgents/mihomo.plist"));
+        } else {
+            assert_eq!(
+                mihoro.mihomo_target_service_path,
+                "/tmp/test/systemd/mihomo.service"
+            );
+        }
+        assert_eq!(mihoro.mihomo_service_name, "mihomo.service");
 
         Ok(())
     }
@@ -574,5 +677,68 @@ mod tests {
         assert!(updated_content.contains("proxies:"));
 
         Ok(())
+    }
+
+    #[test]
+    fn test_create_mihomo_service_linux_contract() -> Result<()> {
+        let dir = tempdir()?;
+        let service_path = dir.path().join("systemd/user/mihomo.service");
+        let mihomo_binary_path = "/tmp/test/mihomo";
+        let mihomo_config_root = "/tmp/test/mihomo-config";
+
+        create_mihomo_service(
+            mihomo_binary_path,
+            mihomo_config_root,
+            service_path.to_str().unwrap(),
+            "mihoro:",
+        )?;
+
+        let content = fs::read_to_string(service_path)?;
+        assert!(content.contains("Description=mihomo Daemon, Another Clash Kernel."));
+        assert!(content.contains("After=network.target NetworkManager.service"));
+        assert!(content.contains("Type=simple"));
+        assert!(content.contains("Restart=always"));
+        assert!(content.contains(&format!(
+            "ExecStart={} -d {}",
+            mihomo_binary_path, mihomo_config_root
+        )));
+        assert!(content.contains("WantedBy=default.target"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_mihomo_launchd_service_contract() -> Result<()> {
+        let dir = tempdir()?;
+        let service_path = dir.path().join("LaunchAgents/mihomo.plist");
+        let mihomo_binary_path = "/tmp/test/mihomo";
+        let mihomo_config_root = "/tmp/test/mihomo-config";
+
+        create_mihomo_launchd_service(
+            "mihomo.service",
+            mihomo_binary_path,
+            mihomo_config_root,
+            service_path.to_str().unwrap(),
+            "mihoro:",
+        )?;
+
+        let content = fs::read_to_string(service_path)?;
+        assert!(content.contains("<key>Label</key>"));
+        assert!(content.contains("<string>mihomo</string>"));
+        assert!(content.contains("<key>ProgramArguments</key>"));
+        assert!(content.contains("<string>/bin/sh</string>"));
+        assert!(content.contains("<string>-c</string>"));
+        assert!(content.contains(&format!(
+            "<string>{} -d {} 2>&1 | logger</string>",
+            mihomo_binary_path, mihomo_config_root
+        )));
+        assert!(content.contains("<key>RunAtLoad</key>"));
+        assert!(content.contains("<key>KeepAlive</key>"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_normalize_service_name() {
+        assert_eq!(normalize_service_name("mihomo"), "mihomo.service");
+        assert_eq!(normalize_service_name("mihomo.service"), "mihomo.service");
     }
 }

@@ -4,7 +4,7 @@ mod cron;
 mod mihoro;
 mod proxy;
 mod resolve_mihomo_bin;
-mod systemctl;
+mod service;
 #[cfg(feature = "self_update")]
 mod upgrade;
 mod utils;
@@ -17,11 +17,10 @@ use clap_complete::{
 };
 use colored::Colorize;
 use reqwest::Client;
-use std::{io, process::Command};
+use std::io;
 
 use cmd::{Args, ClapShell, Commands};
 use mihoro::Mihoro;
-use systemctl::Systemctl;
 
 #[tokio::main]
 async fn main() {
@@ -74,10 +73,13 @@ async fn cli() -> Result<()> {
                 }
                 // Restart service once at the end
                 println!(
-                    "{} Restarting mihomo.service...",
-                    mihoro.prefix.green().bold().italic()
+                    "{} Restarting {}...",
+                    mihoro.prefix.green().bold().italic(),
+                    mihoro.mihomo_service_name
                 );
-                Systemctl::new().restart("mihomo.service").execute()?;
+                mihoro
+                    .service_manager()?
+                    .restart(&mihoro.mihomo_service_name)?;
             } else if *core {
                 mihoro.update_core(&client, arch.as_deref(), true).await?;
             } else if *geodata {
@@ -91,41 +93,49 @@ async fn cli() -> Result<()> {
         Some(Commands::Uninstall) => mihoro.uninstall()?,
         Some(Commands::Proxy { proxy }) => mihoro.proxy_commands(proxy)?,
 
-        Some(Commands::Start) => Systemctl::new()
-            .start("mihomo.service")
-            .execute()
+        Some(Commands::Start) => mihoro
+            .service_manager()?
+            .start(&mihoro.mihomo_service_name)
             .map(|_| {
-                println!("{} Started mihomo.service", mihoro.prefix.green());
+                println!(
+                    "{} Started {}",
+                    mihoro.prefix.green(),
+                    mihoro.mihomo_service_name
+                );
             })?,
 
         Some(Commands::Status) => {
-            Systemctl::new().status("mihomo.service").execute()?;
+            mihoro
+                .service_manager()?
+                .status(&mihoro.mihomo_service_name)?;
         }
 
-        Some(Commands::Stop) => Systemctl::new().stop("mihomo.service").execute().map(|_| {
-            println!("{} Stopped mihomo.service", mihoro.prefix.green());
-        })?,
+        Some(Commands::Stop) => mihoro
+            .service_manager()?
+            .stop(&mihoro.mihomo_service_name)
+            .map(|_| {
+                println!(
+                    "{} Stopped {}",
+                    mihoro.prefix.green(),
+                    mihoro.mihomo_service_name
+                );
+            })?,
 
-        Some(Commands::Restart) => {
-            Systemctl::new()
-                .restart("mihomo.service")
-                .execute()
-                .map(|_| {
-                    println!("{} Restarted mihomo.service", mihoro.prefix.green());
-                })?
-        }
+        Some(Commands::Restart) => mihoro
+            .service_manager()?
+            .restart(&mihoro.mihomo_service_name)
+            .map(|_| {
+                println!(
+                    "{} Restarted {}",
+                    mihoro.prefix.green(),
+                    mihoro.mihomo_service_name
+                );
+            })?,
 
         Some(Commands::Log) => {
-            Command::new("journalctl")
-                .arg("--user")
-                .arg("-xeu")
-                .arg("mihomo.service")
-                .arg("-n")
-                .arg("10")
-                .arg("-f")
-                .spawn()
-                .expect("failed to execute process")
-                .wait()?;
+            mihoro
+                .service_manager()?
+                .logs(&mihoro.mihomo_service_name)?;
         }
 
         Some(Commands::Completions { shell }) => match shell {

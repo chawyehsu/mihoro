@@ -28,6 +28,16 @@ pub struct Config {
     pub mihomo_arch: Option<String>,
     pub mihomo_binary_path: String,
     pub mihomo_config_root: String,
+    /// Service manager override: `auto`, `systemd`, or `launchd`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_manager: Option<String>,
+    /// Service name used by service managers.
+    pub service_name: String,
+    /// Generic service file root; if unset on Linux, falls back to `user_systemd_root`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_root: Option<String>,
+    /// Legacy Linux-only systemd path. Keep for backward compatibility while
+    /// introducing future cross-platform service_root/service_manager fields.
     pub user_systemd_root: String,
     pub mihoro_user_agent: String,
     pub auto_update_interval: u16,
@@ -44,6 +54,9 @@ impl Default for Config {
             remote_config_url: String::from(""),
             mihomo_binary_path: String::from("~/.local/bin/mihomo"),
             mihomo_config_root: String::from("~/.config/mihomo"),
+            service_manager: Some(String::from("auto")),
+            service_name: String::from("mihomo"),
+            service_root: None,
             user_systemd_root: String::from("~/.config/systemd/user"),
             mihoro_user_agent: String::from("mihoro"),
             auto_update_interval: 12,
@@ -176,18 +189,24 @@ pub fn parse_config(path: &str) -> Result<Config> {
 
     // Parse config file
     let config = Config::setup_from(path)?;
-    let required_urls = [
+    let required_fields = [
         ("remote_config_url", &config.remote_config_url),
         ("mihomo_binary_path", &config.mihomo_binary_path),
         ("mihomo_config_root", &config.mihomo_config_root),
-        ("user_systemd_root", &config.user_systemd_root),
+        ("service_name", &config.service_name),
     ];
 
-    // Validate if urls are defined
-    for (field, value) in required_urls.iter() {
+    // Validate if required fields are defined
+    for (field, value) in required_fields.iter() {
         if value.is_empty() {
             bail!("`{}` undefined", field)
         }
+    }
+
+    // Keep legacy compatibility: one service root path must be available.
+    let service_root = config.service_root.as_deref().unwrap_or("");
+    if service_root.is_empty() && config.user_systemd_root.is_empty() {
+        bail!("`service_root` and `user_systemd_root` cannot both be empty");
     }
 
     Ok(config)
@@ -320,6 +339,50 @@ mod tests {
             "http://example.com/config.yaml"
         );
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_config_accepts_legacy_user_systemd_root() -> Result<()> {
+        let dir = tempdir()?;
+        let config_path = dir.path().join("legacy.toml");
+        fs::write(
+            &config_path,
+            r#"
+remote_config_url = "http://example.com/config.yaml"
+mihomo_binary_path = "/tmp/test/mihomo"
+mihomo_config_root = "/tmp/test/mihomo"
+user_systemd_root = "/tmp/test/systemd"
+"#,
+        )?;
+
+        let parsed = parse_config(config_path.to_str().unwrap())?;
+        assert_eq!(parsed.user_systemd_root, "/tmp/test/systemd");
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_config_service_root_overrides_legacy_root() -> Result<()> {
+        let dir = tempdir()?;
+        let config_path = dir.path().join("service-root.toml");
+        fs::write(
+            &config_path,
+            r#"
+remote_config_url = "http://example.com/config.yaml"
+mihomo_binary_path = "/tmp/test/mihomo"
+mihomo_config_root = "/tmp/test/mihomo"
+service_name = "mihomo"
+service_root = "/tmp/test/service-root"
+user_systemd_root = "/tmp/test/systemd"
+"#,
+        )?;
+
+        let parsed = parse_config(config_path.to_str().unwrap())?;
+        assert_eq!(
+            parsed.service_root,
+            Some("/tmp/test/service-root".to_string())
+        );
+        assert_eq!(parsed.user_systemd_root, "/tmp/test/systemd");
         Ok(())
     }
 

@@ -14,9 +14,9 @@
 
 ---
 
-**mihoro** - The 🦀 Rust™-based [Mihomo](https://github.com/MetaCubeX/mihomo) CLI client on Linux.
+**mihoro** - The 🦀 Rust™-based [Mihomo](https://github.com/MetaCubeX/mihomo) CLI client.
 
-- Setup, update, apply overrides, and manage with systemd. **No more, no less.**
+- Setup, update, apply overrides, and manage via native service managers. **No more, no less.**
 - No root privilege required. Maintains per-user instance.
 - First-class support for config subscription.
 
@@ -54,6 +54,9 @@ remote_config_url = ""
 mihomo_channel = "stable"
 mihomo_binary_path = "~/.local/bin/mihomo"
 mihomo_config_root = "~/.config/mihomo"
+service_manager = "auto"
+service_name = "mihomo"
+# service_root = "" # optional; Linux default: ~/.config/systemd/user, macOS default: ~/Library/LaunchAgents
 user_systemd_root = "~/.config/systemd/user"
 mihoro_user_agent = "mihoro"
 auto_update_interval = 12
@@ -196,19 +199,19 @@ Full list of commands:
 
 ```console
 $ mihoro --help
-Mihomo CLI client on Linux.
+Mihomo CLI client, no more, no less.
 
 Usage: mihoro [OPTIONS] [COMMAND]
 
 Commands:
   setup        Setup mihoro by downloading mihomo binary and remote config
   update       Update mihomo components (config by default)
-  apply        Apply mihomo config overrides and restart mihomo.service
-  start        Start mihomo.service with systemctl
-  status       Check mihomo.service status with systemctl
-  stop         Stop mihomo.service with systemctl
-  restart      Restart mihomo.service with systemctl
-  log          Check mihomo.service logs with journalctl [aliases: logs]
+  apply        Apply mihomo config overrides and restart service
+  start        Start mihomo service
+  status       Check mihomo service status
+  stop         Stop mihomo service
+  restart      Restart mihomo service
+  log          Check mihomo service logs [aliases: logs]
   proxy        Output proxy export commands
   uninstall    Uninstall and remove mihoro and config
   completions  Generate shell completions for mihoro
