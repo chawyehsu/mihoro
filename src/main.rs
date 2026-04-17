@@ -5,6 +5,7 @@ mod mihoro;
 mod proxy;
 mod resolve_mihomo_bin;
 mod service;
+mod ui;
 #[cfg(feature = "self_update")]
 mod upgrade;
 mod utils;
@@ -45,6 +46,7 @@ async fn cli() -> Result<()> {
             geodata,
             all,
             arch,
+            ui,
         }) => {
             if *all {
                 // Update config (without restarting yet)
@@ -71,6 +73,10 @@ async fn cli() -> Result<()> {
                 if let Err(e) = mihoro.update_core(&client, arch.as_deref(), false).await {
                     eprintln!("{} Failed to update core: {}", mihoro.prefix.yellow(), e);
                 }
+                println!("{} Updating UI...", mihoro.prefix.magenta().bold().italic());
+                if let Err(e) = mihoro.update_ui(&client).await {
+                    eprintln!("{} Failed to update UI: {}", mihoro.prefix.yellow(), e);
+                }
                 // Restart service once at the end
                 println!(
                     "{} Restarting {}...",
@@ -82,9 +88,11 @@ async fn cli() -> Result<()> {
                     .restart(&mihoro.mihomo_service_name)?;
             } else if *core {
                 mihoro.update_core(&client, arch.as_deref(), true).await?;
+            } else if *ui {
+                mihoro.update_ui(&client).await?;
             } else if *geodata {
                 mihoro.update_geodata(&client).await?;
-            } else if *config || (!*core && !*geodata) {
+            } else if *config || (!*core && !*geodata && !*ui) {
                 // Explicit --config or default (no flags)
                 mihoro.update_config(&client, true).await?;
             }

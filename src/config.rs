@@ -1,3 +1,4 @@
+use crate::ui::{default_ui, Ui};
 use crate::utils::create_parent_dir;
 
 use std::{collections::HashMap, fs, path::Path};
@@ -21,6 +22,8 @@ pub enum MihomoChannel {
 #[serde(default)]
 pub struct Config {
     pub remote_config_url: String,
+    #[serde(default = "default_ui", skip_serializing_if = "Option::is_none")]
+    pub ui: Option<Ui>,
     pub mihomo_channel: MihomoChannel,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_mihomo_binary_url: Option<String>,
@@ -48,6 +51,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
+            ui: default_ui(),
             remote_mihomo_binary_url: None,
             mihomo_channel: MihomoChannel::default(),
             mihomo_arch: None,
@@ -74,13 +78,14 @@ pub struct MihomoConfig {
     pub port: u16,
     pub socks_port: u16,
     pub mixed_port: Option<u16>,
+    pub redir_port: Option<u16>,
     pub allow_lan: Option<bool>,
     pub bind_address: Option<String>,
     mode: MihomoMode,
     log_level: MihomoLogLevel,
     ipv6: Option<bool>,
     external_controller: Option<String>,
-    external_ui: Option<String>,
+    pub external_ui: Option<String>,
     secret: Option<String>,
     pub geodata_mode: Option<bool>,
     pub geo_auto_update: Option<bool>,
@@ -94,6 +99,7 @@ impl Default for MihomoConfig {
             port: 7891,
             socks_port: 7892,
             mixed_port: Some(7890),
+            redir_port: None,
             allow_lan: Some(false),
             bind_address: Some(String::from("*")),
             mode: MihomoMode::Rule,
@@ -226,6 +232,9 @@ pub struct MihomoYamlConfig {
     #[serde(rename = "mixed-port", skip_serializing_if = "Option::is_none")]
     mixed_port: Option<u16>,
 
+    #[serde(rename = "redir-port", skip_serializing_if = "Option::is_none")]
+    redir_port: Option<u16>,
+
     #[serde(rename = "allow-lan", skip_serializing_if = "Option::is_none")]
     allow_lan: Option<bool>,
 
@@ -287,6 +296,7 @@ pub fn apply_mihomo_override(path: &str, override_config: &MihomoConfig) -> Resu
     mihomo_yaml.port = Some(override_config.port);
     mihomo_yaml.socks_port = Some(override_config.socks_port);
     mihomo_yaml.mixed_port = override_config.mixed_port;
+    mihomo_yaml.redir_port = override_config.redir_port;
     mihomo_yaml.allow_lan = override_config.allow_lan;
     mihomo_yaml.bind_address = override_config.bind_address.clone();
     mihomo_yaml.mode = Some(override_config.mode.clone());
@@ -338,6 +348,7 @@ mod tests {
             read_config.remote_config_url,
             "http://example.com/config.yaml"
         );
+        assert_eq!(read_config.ui, Some(Ui::Metacubexd));
 
         Ok(())
     }
@@ -417,6 +428,7 @@ user_systemd_root = "/tmp/test/systemd"
             port: 8080
             socks-port: 8081
             mixed-port: 7890
+            redir-port: 7893
             allow-lan: false
             mode: rule
             log-level: info
@@ -440,6 +452,25 @@ user_systemd_root = "/tmp/test/systemd"
         assert!(updated_content.contains("port: 7891"));
         assert!(updated_content.contains("socks-port: 7892"));
         assert!(updated_content.contains("proxies:"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_config_uses_default_ui() -> Result<()> {
+        let dir = tempdir()?;
+        let config_path = dir.path().join("test.toml");
+
+        let toml_content = r#"
+            remote_config_url = "http://example.com/config.yaml"
+            mihomo_binary_path = "~/.local/bin/mihomo"
+            mihomo_config_root = "~/.config/mihomo"
+            user_systemd_root = "~/.config/systemd/user"
+        "#;
+        fs::write(&config_path, toml_content)?;
+
+        let config = parse_config(config_path.to_str().unwrap())?;
+        assert_eq!(config.ui, Some(Ui::Metacubexd));
 
         Ok(())
     }

@@ -34,6 +34,10 @@ pub enum Commands {
         #[arg(long)]
         config: bool,
 
+        /// Update external UI assets
+        #[arg(long)]
+        ui: bool,
+
         /// Update mihomo core binary
         #[arg(long)]
         core: bool,
@@ -43,7 +47,7 @@ pub enum Commands {
         geodata: bool,
 
         /// Update everything: config, geodata, and mihomo core binary
-        #[arg(long, conflicts_with_all = ["config", "core", "geodata"])]
+        #[arg(long, conflicts_with_all = ["config", "ui", "core", "geodata"])]
         all: bool,
 
         /// Override architecture detection (used with --core or --all)
@@ -161,5 +165,38 @@ mod tests {
 
         let log = Args::parse_from(["mihoro", "log"]);
         assert!(matches!(log.command, Some(Commands::Log)));
+    }
+    #[test]
+    fn test_parse_update_ui_flag() {
+        let args = Args::parse_from(["mihoro", "update", "--ui"]);
+        match args.command {
+            Some(Commands::Update {
+                ui,
+                config,
+                core,
+                geodata,
+                all,
+                ..
+            }) => {
+                assert!(ui);
+                assert!(!config);
+                assert!(!core);
+                assert!(!geodata);
+                assert!(!all);
+            }
+            _ => panic!("expected update command"),
+        }
+    }
+
+    #[test]
+    fn test_parse_update_all_flag() {
+        let args = Args::parse_from(["mihoro", "update", "--all"]);
+        match args.command {
+            Some(Commands::Update { all, ui, .. }) => {
+                assert!(all);
+                assert!(!ui);
+            }
+            _ => panic!("expected update command"),
+        }
     }
 }
