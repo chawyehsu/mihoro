@@ -4,6 +4,9 @@ pub mod systemd;
 use std::process::ExitStatus;
 
 use anyhow::{bail, Result};
+use shellexpand::tilde;
+
+use crate::config::Config;
 
 use self::systemd::Systemctl;
 
@@ -128,6 +131,42 @@ fn select_service_manager(kind: ServiceManagerKind, os: &str) -> Result<Selected
             "macos" => Ok(SelectedServiceManager::Launchd),
             _ => bail!("unsupported operating system for auto service manager: {os}"),
         },
+    }
+}
+
+/// Renders the service definition content for the given parameters
+pub fn render_service_definition(
+    service_name: &str,
+    binary_path: &str,
+    config_root: &str,
+) -> String {
+    match std::env::consts::OS {
+        "macos" => launchd::build_plist(service_name, binary_path, config_root),
+        _ => systemd::render_service_string(binary_path, config_root),
+    }
+}
+
+pub fn resolve_service_path(config: &Config, service_name: &str) -> String {
+    match std::env::consts::OS {
+        "macos" => {
+            let root = config
+                .service_root
+                .clone()
+                .unwrap_or_else(|| String::from("~/Library/LaunchAgents"));
+            tilde(&format!(
+                "{}/{}.plist",
+                root,
+                launchd::service_stem(service_name)
+            ))
+            .to_string()
+        }
+        _ => {
+            let root = config
+                .service_root
+                .clone()
+                .unwrap_or_else(|| config.user_systemd_root.clone());
+            tilde(&format!("{}/{}", root, service_name)).to_string()
+        }
     }
 }
 

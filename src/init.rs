@@ -230,7 +230,7 @@ pub async fn run(config_path: &str, client: &Client, opts: InitOptions) -> Resul
     if report.stage_failed("remote config") {
         let skip = || StageStatus::Skipped("skipped: remote config stage failed".to_string());
         report.record("install binary", skip());
-        report.record("systemd service", skip());
+        report.record("daemon service", skip());
         report.record("service start", skip());
     } else {
         report.begin(
@@ -247,7 +247,7 @@ pub async fn run(config_path: &str, client: &Client, opts: InitOptions) -> Resul
         report.record("install binary", install_status);
 
         report
-            .run("systemd service", None, || async {
+            .run("daemon service", None, || async {
                 mihoro.ensure_service().await
             })
             .await;

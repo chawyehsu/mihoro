@@ -12,7 +12,7 @@ pub struct Args {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize mihoro: download binary, config, geodata, and set up the systemd service
+    /// Initialize mihoro: download binary, config, geodata, and set up the service
     Init {
         /// Re-download all artifacts even if they already exist
         #[arg(long)]

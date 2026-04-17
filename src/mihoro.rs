@@ -3,7 +3,9 @@ use crate::config::{apply_mihomo_override, parse_config, Config};
 use crate::cron;
 use crate::proxy::{proxy_export_cmd, proxy_unset_cmd};
 use crate::resolve_mihomo_bin;
-use crate::service::{launchd, systemd, ServiceManager, ServiceManagerKind};
+use crate::service::{
+    render_service_definition, resolve_service_path, ServiceManager, ServiceManagerKind,
+};
 use crate::ui::{install_ui, resolve_external_ui_path};
 use crate::utils::{
     create_parent_dir, delete_file, download_file, extract_gzip, try_decode_base64_file_inplace,
@@ -131,7 +133,7 @@ impl Mihoro {
         let binary_exists = fs::metadata(&self.mihomo_target_binary_path).is_ok();
         if binary_exists {
             println!(
-                "{} Stopping mihomo.service before overwriting binary...",
+                "{} Stopping service before overwriting binary...",
                 DETAIL_PREFIX.cyan()
             );
             self.service_manager()?.stop(&self.mihomo_service_name)?;
@@ -247,17 +249,11 @@ impl Mihoro {
 
     /// Write the systemd unit file.  Skips if the file already exists with identical content.
     pub async fn ensure_service(&self) -> Result<StageStatus> {
-        let service_content = match std::env::consts::OS {
-            "macos" => launchd::build_plist(
-                &self.mihomo_service_name,
-                &self.mihomo_target_binary_path,
-                &self.mihomo_target_config_root,
-            ),
-            _ => systemd::render_service_string(
-                &self.mihomo_target_binary_path,
-                &self.mihomo_target_config_root,
-            ),
-        };
+        let service_content = render_service_definition(
+            &self.mihomo_service_name,
+            &self.mihomo_target_binary_path,
+            &self.mihomo_target_config_root,
+        );
 
         if let Ok(existing) = fs::read_to_string(&self.mihomo_target_service_path) {
             if existing == service_content {
@@ -268,9 +264,8 @@ impl Mihoro {
         fs::write(&self.mihomo_target_service_path, &service_content)?;
         self.service_manager()?.daemon_reload()?;
         println!(
-            "{} Created {} service at {}",
+            "{} Created service at {}",
             DETAIL_PREFIX.cyan(),
-            self.mihomo_service_name,
             self.mihomo_target_service_path.underline().yellow()
         );
         Ok(StageStatus::Installed)
@@ -437,7 +432,7 @@ impl Mihoro {
 
     pub async fn restart_service(&self) -> Result<StageStatus> {
         println!(
-            "{} Restarting {} service...",
+            "{} Restarting {}...",
             DETAIL_PREFIX.cyan(),
             self.mihomo_service_name
         );
@@ -573,35 +568,13 @@ fn normalize_service_name(service_name: &str) -> String {
     }
 }
 
-fn resolve_service_path(config: &Config, service_name: &str) -> String {
-    match std::env::consts::OS {
-        "macos" => {
-            let root = config
-                .service_root
-                .clone()
-                .unwrap_or_else(|| String::from("~/Library/LaunchAgents"));
-            tilde(&format!(
-                "{}/{}.plist",
-                root,
-                launchd::service_stem(service_name)
-            ))
-            .to_string()
-        }
-        _ => {
-            let root = config
-                .service_root
-                .clone()
-                .unwrap_or_else(|| config.user_systemd_root.clone());
-            tilde(&format!("{}/{}", root, service_name)).to_string()
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    use crate::service::*;
 
     /// Test that Mihoro::new correctly parses config and derives paths
     #[test]
