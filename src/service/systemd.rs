@@ -82,6 +82,54 @@ impl Systemctl {
             .wait()
             .with_context(|| "failed to execute systemctl")
     }
+
+    /// Returns `true` if the given user service is currently active.
+    pub fn is_active(&mut self, service: &str) -> bool {
+        self.systemctl
+            .arg("--user")
+            .arg("is-active")
+            .arg("--quiet")
+            .arg(service)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+
+    /// Returns `true` if the given user service is enabled for autostart.
+    pub fn is_enabled(&mut self, service: &str) -> bool {
+        self.systemctl
+            .arg("--user")
+            .arg("is-enabled")
+            .arg("--quiet")
+            .arg(service)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+/// Render the systemd unit file content for the mihomo service.
+///
+/// Reference: https://wiki.metacubex.one/startup/service/
+pub fn render_service_string(binary_path: &str, config_root: &str) -> String {
+    format!(
+        "[Unit]
+Description=mihomo Daemon, Another Clash Kernel.
+After=network.target NetworkManager.service systemd-networkd.service iwd.service
+
+[Service]
+Type=simple
+LimitNPROC=4096
+LimitNOFILE=65536
+Restart=always
+ExecStartPre=/usr/bin/sleep 1s
+ExecStart={} -d {}
+ExecReload=/bin/kill -HUP $MAINPID
+
+[Install]
+WantedBy=default.target",
+        binary_path, config_root
+    )
 }
 
 pub fn journalctl_logs(service: &str) -> Result<ExitStatus> {

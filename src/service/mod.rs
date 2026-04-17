@@ -83,6 +83,20 @@ impl ServiceManager {
         }
     }
 
+    pub fn is_active(&self, service: &str) -> bool {
+        match self.selected {
+            SelectedServiceManager::Systemd => Systemctl::new().is_active(service),
+            SelectedServiceManager::Launchd => launchd::is_active(service),
+        }
+    }
+
+    pub fn is_enabled(&self, service: &str) -> bool {
+        match self.selected {
+            SelectedServiceManager::Systemd => Systemctl::new().is_enabled(service),
+            SelectedServiceManager::Launchd => launchd::is_loaded(service),
+        }
+    }
+
     pub fn daemon_reload(&self) -> Result<ExitStatus> {
         match self.selected {
             SelectedServiceManager::Systemd => Systemctl::new().daemon_reload().execute(),

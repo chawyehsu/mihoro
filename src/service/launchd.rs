@@ -98,7 +98,7 @@ fn stderr_contains(output: &std::process::Output, pattern: &str) -> bool {
         .contains(&pattern.to_lowercase())
 }
 
-fn is_loaded(service: &str) -> bool {
+pub fn is_loaded(service: &str) -> bool {
     let target = match service_target(service) {
         Ok(t) => t,
         Err(_) => return false,
@@ -201,6 +201,17 @@ pub fn logs(_: &str) -> Result<ExitStatus> {
         .spawn()?
         .wait()
         .with_context(|| "failed to execute `log stream`")
+}
+
+pub fn is_active(service: &str) -> bool {
+    let target = match service_target(service) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    match run_launchctl_output(&["list", &target]) {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
 #[cfg(test)]
