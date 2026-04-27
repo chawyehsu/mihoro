@@ -241,7 +241,7 @@ pub async fn run(config_path: &str, client: &Client, opts: InitOptions) -> Resul
         report
             .run(
                 "daemon service",
-                Some("writing systemd service"),
+                Some("writing daemon service"),
                 || async { mihoro.ensure_service().await },
             )
             .await;
