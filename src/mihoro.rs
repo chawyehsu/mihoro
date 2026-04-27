@@ -17,6 +17,7 @@ use anyhow::Error;
 use std::fs;
 use std::os::unix::prelude::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::{anyhow, Result};
 use colored::Colorize;
@@ -155,8 +156,13 @@ impl Mihoro {
         let config_path = Path::new(&self.mihomo_target_config_path);
         if !force && config_path.exists() {
             // Re-apply TOML overrides onto the cached YAML so user changes take effect.
-            apply_mihomo_override(&self.mihomo_target_config_path, &self.config.mihomo_config)?;
-            return Ok(StageStatus::Installed);
+            let changed =
+                apply_mihomo_override(&self.mihomo_target_config_path, &self.config.mihomo_config)?;
+            return if changed {
+                Ok(StageStatus::Installed)
+            } else {
+                Ok(StageStatus::Skipped("config already current".to_string()))
+            };
         }
 
         download_file(
@@ -310,13 +316,51 @@ impl Mihoro {
         }
 
         // Resolve binary URL (auto-detect from GitHub or use configured URL)
-        let binary_url = resolve_mihomo_bin::resolve_binary_url(
-            client,
-            &self.config,
-            arch_override,
-            DETAIL_PREFIX,
-        )
-        .await?;
+        let resolved_binary =
+            resolve_mihomo_bin::resolve_binary(client, &self.config, arch_override, DETAIL_PREFIX)
+                .await?;
+        if let Some(latest_version) = resolved_binary.version.as_deref() {
+            match installed_mihomo_version(&self.mihomo_target_binary_path) {
+                Ok(Some(installed_version)) if installed_version == latest_version => {
+                    println!(
+                        "{} Mihomo core is already up to date ({})",
+                        DETAIL_PREFIX.green(),
+                        installed_version.bold()
+                    );
+                    return Ok(StageStatus::Skipped(format!(
+                        "already at {}",
+                        installed_version
+                    )));
+                }
+                Ok(Some(installed_version)) => {
+                    println!(
+                        "{} Updating mihomo core: {} -> {}",
+                        DETAIL_PREFIX.cyan(),
+                        installed_version.bold(),
+                        latest_version.bold()
+                    );
+                }
+                Ok(None) => {
+                    println!(
+                        "{} Could not detect installed mihomo version; downloading latest ({})",
+                        DETAIL_PREFIX.yellow(),
+                        latest_version.bold()
+                    );
+                }
+                Err(err) => {
+                    println!(
+                        "{} Could not check installed mihomo version: {:#}",
+                        DETAIL_PREFIX.yellow(),
+                        err
+                    );
+                    println!(
+                        "{} Downloading latest mihomo core ({})",
+                        DETAIL_PREFIX.cyan(),
+                        latest_version.bold()
+                    );
+                }
+            }
+        }
 
         // Create a temporary file for downloading
         let temp_file = NamedTempFile::new()?;
@@ -325,7 +369,7 @@ impl Mihoro {
         // Download mihomo binary first (before stopping service)
         download_file(
             client,
-            &binary_url,
+            &resolved_binary.url,
             temp_path,
             &self.config.mihoro_user_agent,
         )
@@ -560,6 +604,53 @@ impl Mihoro {
     }
 }
 
+fn installed_mihomo_version(binary_path: &str) -> Result<Option<String>> {
+    let output = Command::new(binary_path)
+        .arg("-v")
+        .output()
+        .map_err(|err| anyhow!("failed to run `{binary_path} -v`: {err}"))?;
+
+    if !output.status.success() {
+        return Err(anyhow!(
+            "`{} -v` exited with {}",
+            binary_path,
+            output.status
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(extract_mihomo_version(&format!("{stdout}\n{stderr}")))
+}
+
+fn extract_mihomo_version(output: &str) -> Option<String> {
+    output
+        .split_whitespace()
+        .find_map(normalize_mihomo_version_token)
+}
+
+fn normalize_mihomo_version_token(token: &str) -> Option<String> {
+    let token = token.trim_matches(|c: char| {
+        c == ',' || c == ';' || c == ':' || c == '(' || c == ')' || c == '[' || c == ']'
+    });
+
+    let is_stable_version = token
+        .strip_prefix('v')
+        .and_then(|rest| rest.chars().next())
+        .is_some_and(|c| c.is_ascii_digit());
+
+    let is_bare_stable_version =
+        token.chars().next().is_some_and(|c| c.is_ascii_digit()) && token.contains('.');
+
+    if is_stable_version || token.starts_with("alpha-") {
+        Some(token.to_string())
+    } else if is_bare_stable_version {
+        Some(format!("v{token}"))
+    } else {
+        None
+    }
+}
+
 fn normalize_service_name(service_name: &str) -> String {
     if service_name.ends_with(".service") {
         service_name.to_string()
@@ -693,6 +784,27 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn test_extract_mihomo_version_from_stable_output() {
+        let output = "Mihomo Meta v1.19.23 linux amd64 with go1.25.1 2026-04-07";
+        assert_eq!(extract_mihomo_version(output), Some("v1.19.23".to_string()));
+    }
+
+    #[test]
+    fn test_extract_mihomo_version_normalizes_bare_stable_output() {
+        let output = "Mihomo Meta 1.19.23 linux amd64 with go1.25.1 2026-04-07";
+        assert_eq!(extract_mihomo_version(output), Some("v1.19.23".to_string()));
+    }
+
+    #[test]
+    fn test_extract_mihomo_version_from_alpha_output() {
+        let output = "Mihomo Meta alpha-c107c6a linux amd64 with go1.25.1";
+        assert_eq!(
+            extract_mihomo_version(output),
+            Some("alpha-c107c6a".to_string())
+        );
+    }
+
     /// Test integration: download config → apply override → verify result
     #[test]
     fn test_integration_apply_override_flow() -> Result<()> {
@@ -738,6 +850,55 @@ mod tests {
         assert!(updated_content.contains("port: 9999"));
         assert!(updated_content.contains("socks-port: 9998"));
         assert!(updated_content.contains("proxies:"));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_ensure_remote_config_skips_when_cached_config_is_current() -> Result<()> {
+        let dir = tempdir()?;
+        let config_path = dir.path().join("test.toml");
+        let yaml_path = dir.path().join("config.yaml");
+
+        let toml_content = r#"
+            remote_config_url = "http://example.com/config.yaml"
+            mihomo_binary_path = "/tmp/test/mihomo"
+            mihomo_config_root = "{}"
+            user_systemd_root = "/tmp/test/systemd"
+
+            [mihomo_config]
+            port = 9999
+            socks_port = 9998
+        "#;
+        fs::write(
+            &config_path,
+            toml_content.replace("{}", dir.path().to_str().unwrap()),
+        )?;
+
+        let yaml_content = r#"
+            port: 8080
+            socks-port: 8081
+            mode: rule
+            proxies:
+              - name: "test"
+                type: http
+                server: example.com
+                port: 443
+        "#;
+        fs::write(&yaml_path, yaml_content)?;
+
+        let mihoro = Mihoro::new(&config_path.to_str().unwrap().to_string())?;
+        apply_mihomo_override(yaml_path.to_str().unwrap(), &mihoro.config.mihomo_config)?;
+        let current_content = fs::read_to_string(&yaml_path)?;
+
+        let status = mihoro.ensure_remote_config(&Client::new(), false).await?;
+
+        match status {
+            StageStatus::Skipped(reason) => assert_eq!(reason, "config already current"),
+            StageStatus::Installed => panic!("expected remote config to be skipped"),
+            StageStatus::Failed(_) => panic!("ensure_remote_config returned a failed status"),
+        }
+        assert_eq!(fs::read_to_string(&yaml_path)?, current_content);
 
         Ok(())
     }
